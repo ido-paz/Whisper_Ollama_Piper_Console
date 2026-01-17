@@ -1,0 +1,12 @@
+*.exe
+*.dll
+/obj/
+/bin/
+*.log
+*.user
+*.suo
+*.pdb
+*.cache
+*.bin
+*.wav
+*.mp3
