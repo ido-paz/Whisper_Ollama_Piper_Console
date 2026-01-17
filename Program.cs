@@ -1,18 +1,30 @@
 ﻿using System.Diagnostics;
+using System.Text;
 using Whisper.net;
 using Whisper.net.Ggml;
 
 Console.WriteLine("You can speak, I am recording ...");
-
 // Record 3 seconds of microphone audio
 string latest_Recording_AudioPath = "latest_recording_output.wav";
-int recordingDurationInSeconds = 10;
-await RecordAudioAsync(latest_Recording_AudioPath,recordingDurationInSeconds);
+int recordingDurationInSeconds = 3;
+if(await Try_RecordAudioAsync(latest_Recording_AudioPath,recordingDurationInSeconds))
+{
+    Console.WriteLine("Recording completed.");
+    // Transcribe the recorded audio
+    string transcription = await Get_TranscribeAudioAsync(latest_Recording_AudioPath);
+    if (transcription != null)
+    {
+        Console.WriteLine("\n=== Transcription Result ===");
+        Console.WriteLine(transcription);
+    }
+}
+else
+{
+    Console.WriteLine("Recording failed.");
+}
 
-// Transcribe the recorded audio
-await TranscribeAudioAsync(latest_Recording_AudioPath);
-
-static async Task RecordAudioAsync(string outputPath, int durationInSeconds = 3)
+// Record audio from microphone using ffmpeg
+static async Task<bool> Try_RecordAudioAsync(string outputPath, int durationInSeconds = 3)
 {
     try
     {
@@ -31,10 +43,7 @@ static async Task RecordAudioAsync(string outputPath, int durationInSeconds = 3)
         using (var process = Process.Start(startInfo))
         {
             if (process == null)
-            {
-                Console.WriteLine("Failed to start ffmpeg process.");
-                return;
-            }
+                throw new Exception("Failed to start ffmpeg process.");
 
             var errorTask = process.StandardError.ReadToEndAsync();
             var outputTask = process.StandardOutput.ReadToEndAsync();
@@ -44,28 +53,28 @@ static async Task RecordAudioAsync(string outputPath, int durationInSeconds = 3)
             var error = await errorTask;
             var output = await outputTask;
 
-            if (process.ExitCode == 0)
-                Console.WriteLine($"Audio recorded successfully to {outputPath}");
-            else
-                Console.WriteLine($"Error recording audio: {error}");
+            if (process.ExitCode != 0)
+                throw new Exception($"Error recording audio: {error}");
+            Console.WriteLine($"Audio recorded successfully to {outputPath}");
+            return true;    
         }
     }
     catch (Exception ex)
     {
         Console.WriteLine($"Exception occurred: {ex.Message}");
-        Console.WriteLine("\nNote: ffmpeg must be installed and in your system PATH.");
-        Console.WriteLine("Download from: https://ffmpeg.org/download.html");
+        return false;
     }
 }
 // Transcribe audio using Whisper.net
-static async Task TranscribeAudioAsync(string audioPath)
+static async Task<string> Get_TranscribeAudioAsync(string audioPath)
 {
     try
     {
+        StringBuilder stringBuilder= new StringBuilder();
         if (!File.Exists(audioPath))
         {
             Console.WriteLine($"Audio file not found: {audioPath}");
-            return;
+            return null;
         }
 
         Console.WriteLine("Loading Whisper model...");
@@ -81,18 +90,19 @@ static async Task TranscribeAudioAsync(string audioPath)
                 Console.WriteLine($"Transcribing {audioPath}...");
                 
                 using (var fileStream = File.OpenRead(audioPath))
-                {
-                    Console.WriteLine("\n=== Transcription Result ===");
+                {                    
                     await foreach (var segment in processor.ProcessAsync(fileStream))
                     {
-                        Console.WriteLine($"[{segment.Start:hh\\:mm\\:ss} --> {segment.End:hh\\:mm\\:ss}] {segment.Text}");
+                        stringBuilder.AppendLine($"[{segment.Start:hh\\:mm\\:ss} --> {segment.End:hh\\:mm\\:ss}] {segment.Text}");
                     }
                 }
             }
         }
+        return stringBuilder.ToString();
     }
     catch (Exception ex)
     {
         Console.WriteLine($"Error transcribing audio: {ex.Message}");
+        return null;
     }
 }
