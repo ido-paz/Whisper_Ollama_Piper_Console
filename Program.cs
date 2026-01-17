@@ -3,35 +3,52 @@ using System.Text;
 using System.Text.Json;
 using Whisper.net;
 using Whisper.net.Ggml;
-// Configuration
-string latest_Recording_AudioPath = "latest_recording_output.wav";
+
+// =====================================================
+// CONFIGURATION
+// =====================================================
+string recordingAudioPath = Path.Combine("audio", "latest_recording_output.wav");
 int recordingDurationInSeconds = 3;
-string whisper_Language = "en";//"he" for Hebrew, "es" for Spanish, etc.
-string whisper_ModelPath = "ggml-base.bin";//"ggml-medium.bin" for better accuracy
-string ollama_Model = "llama3.1";//"llama2", "neural-chat", etc.
-string ollama_Url = "http://localhost:11434";
-// Record X seconds of microphone audio
+string whisperLanguage = "en"; // "he" for Hebrew, "es" for Spanish, etc.
+string whisperModelPath = Path.Combine("whisper", "ggml-base.bin"); // "ggml-medium.bin" for better accuracy
+string ollamaModel = "llama3.1"; // "llama2", "neural-chat", etc.
+string ollamaUrl = "http://localhost:11434";
+string piperAudioOutput = Path.Combine("audio", "ollama_response_output.wav");
+string piperLanguage = "en_US-lessac-medium"; // "he_IL-kalpak-medium" for Hebrew
+
+// =====================================================
+// MAIN PIPELINE: Record -> Transcribe -> LLM -> TTS
+// =====================================================
+// Create audio folder if it doesn't exist
+Directory.CreateDirectory("audio");
 
 Console.WriteLine("You can speak, I am recording ...");
-if(await Try_RecordAudio_Async(latest_Recording_AudioPath,recordingDurationInSeconds))
+
+if (await RecordAudioAsync(recordingAudioPath, recordingDurationInSeconds))
 {
     Console.WriteLine("Recording completed.");
-    // Transcribe the recorded audio
-    string transcription = await Get_TranscribeAudio_Async(latest_Recording_AudioPath, whisper_Language, whisper_ModelPath);
+
+    // Step 1: Transcribe audio to text using Whisper
+    string transcription = await TranscribeAudioAsync(recordingAudioPath, whisperLanguage, whisperModelPath);
     if (transcription != null)
     {
         Console.WriteLine("\n=== Transcription Result ===");
         Console.WriteLine(transcription);
 
-        // Send the transcription to Ollama and get a response
-        string ollamaResponse = await Send_TextToOllama_Async(transcription, ollama_Model, ollama_Url);
+        // Step 2: Send transcription to Ollama for processing
+        string ollamaResponse = await SendToOllamaAsync(transcription, ollamaModel, ollamaUrl);
         if (ollamaResponse != null)
         {
-            Console.WriteLine("\n=== Process Completed, Ollama response ===");
+            Console.WriteLine("\n=== Ollama Response ===");
             Console.WriteLine(ollamaResponse);
+
+            // Step 3: Convert Ollama response to speech using Piper
+            await ConvertTextToSpeechAsync(ollamaResponse, piperAudioOutput, piperLanguage);
         }
         else
+        {
             Console.WriteLine("Failed to get response from Ollama.");
+        }
     }
 }
 else
@@ -39,13 +56,19 @@ else
     Console.WriteLine("Recording failed.");
 }
 
-// Record audio from microphone using ffmpeg
-static async Task<bool> Try_RecordAudio_Async(string outputPath, int durationInSeconds = 3)
+// =====================================================
+// AUDIO RECORDING (FFmpeg)
+// =====================================================
+/// <summary>
+/// Records audio from the microphone using FFmpeg.
+/// </summary>
+static async Task<bool> RecordAudioAsync(string outputPath, int durationInSeconds = 3)
 {
     try
     {
         if (File.Exists(outputPath))
-            File.Delete(outputPath);    
+            File.Delete(outputPath);
+
         var startInfo = new ProcessStartInfo
         {
             FileName = @"C:\ffmpeg\ffmpeg-master-latest-win64-gpl\bin\ffmpeg.exe",
@@ -67,26 +90,32 @@ static async Task<bool> Try_RecordAudio_Async(string outputPath, int durationInS
             await process.WaitForExitAsync();
 
             var error = await errorTask;
-            var output = await outputTask;
 
             if (process.ExitCode != 0)
                 throw new Exception($"Error recording audio: {error}");
+
             Console.WriteLine($"Audio recorded successfully to {outputPath}");
-            return true;    
+            return true;
         }
     }
     catch (Exception ex)
     {
-        Console.WriteLine($"Exception occurred: {ex.Message}");
+        Console.WriteLine($"Exception occurred during recording: {ex.Message}");
         return false;
     }
 }
-// Transcribe audio using Whisper.net
-static async Task<string> Get_TranscribeAudio_Async(string audioPath, string language = "en", string whisper_modelPath = "ggml-base.bin")
+
+// =====================================================
+// SPEECH-TO-TEXT (Whisper.net)
+// =====================================================
+/// <summary>
+/// Transcribes audio file to text using Whisper.net.
+/// Available models: tiny, base, small, medium, large
+/// </summary>
+static async Task<string?> TranscribeAudioAsync(string audioPath, string language = "en", string modelPath = "ggml-base.bin")
 {
     try
     {
-        StringBuilder stringBuilder= new StringBuilder();
         if (!File.Exists(audioPath))
         {
             Console.WriteLine($"Audio file not found: {audioPath}");
@@ -94,19 +123,18 @@ static async Task<string> Get_TranscribeAudio_Async(string audioPath, string lan
         }
 
         Console.WriteLine("Loading Whisper model...");
-        
-        // Download or use medium model - you can specify different model sizes
-        // Available models: tiny, base, small, medium, large
-        using (var whisperFactory = WhisperFactory.FromPath(whisper_modelPath))
+
+        var stringBuilder = new StringBuilder();
+        using (var whisperFactory = WhisperFactory.FromPath(modelPath))
         {
             using (var processor = whisperFactory.CreateBuilder()
                 .WithLanguage(language)
                 .Build())
             {
                 Console.WriteLine($"Transcribing {audioPath}...");
-                
+
                 using (var fileStream = File.OpenRead(audioPath))
-                {                    
+                {
                     await foreach (var segment in processor.ProcessAsync(fileStream))
                     {
                         stringBuilder.AppendLine($"[{segment.Start:hh\\:mm\\:ss} --> {segment.End:hh\\:mm\\:ss}] {segment.Text}");
@@ -114,6 +142,7 @@ static async Task<string> Get_TranscribeAudio_Async(string audioPath, string lan
                 }
             }
         }
+
         return stringBuilder.ToString();
     }
     catch (Exception ex)
@@ -122,8 +151,14 @@ static async Task<string> Get_TranscribeAudio_Async(string audioPath, string lan
         return null;
     }
 }
-// Send text to Ollama via HTTP and print the response
-static async Task<string> Send_TextToOllama_Async(string text, string model = "llama2", string ollamaUrl = "http://localhost:11434")
+
+// =====================================================
+// LANGUAGE MODEL (Ollama API)
+// =====================================================
+/// <summary>
+/// Sends text to Ollama LLM via HTTP API and retrieves the response.
+/// </summary>
+static async Task<string?> SendToOllamaAsync(string text, string model = "llama2", string ollamaUrl = "http://localhost:11434")
 {
     try
     {
@@ -157,12 +192,10 @@ static async Task<string> Send_TextToOllama_Async(string text, string model = "l
                 var root = doc.RootElement;
                 if (root.TryGetProperty("response", out var responseProperty))
                 {
-                    string ollama_Response = responseProperty.GetString();
-                    Console.WriteLine("\n=== Ollama Response ===");
-                    Console.WriteLine(ollama_Response);
-                    return ollama_Response;
+                    return responseProperty.GetString();
                 }
             }
+
             return null;
         }
     }
@@ -170,5 +203,122 @@ static async Task<string> Send_TextToOllama_Async(string text, string model = "l
     {
         Console.WriteLine($"Error sending to Ollama: {ex.Message}");
         return null;
+    }
+}
+
+// =====================================================
+// TEXT-TO-SPEECH (Piper)
+// =====================================================
+/// <summary>
+/// Converts text to speech using Piper TTS via Python subprocess.
+/// Requires: pip install piper-tts
+/// Voice models: en_US-lessac-medium, he_IL-kalpak-medium, etc.
+/// </summary>
+static async Task<bool> ConvertTextToSpeechAsync(string text, string outputPath = "output.wav", string language = "en_US-lessac-medium")
+{
+    try
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            Console.WriteLine("Text is empty, skipping TTS conversion.");
+            return false;
+        }
+
+        if (File.Exists(outputPath))
+            File.Delete(outputPath);
+
+        // Generate Python script for Piper
+        string pythonScriptPath = Path.Combine(Path.GetTempPath(), "piper_tts.py");
+        string voicesDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".local", "share", "piper", "voices"
+        );
+
+        string pythonCode = $@"
+import sys
+import subprocess
+from pathlib import Path
+
+try:
+    voice_name = '{language}'
+    voices_dir = Path(r'{voicesDir}')
+    
+    voice_file = voices_dir / f'{{voice_name}}.onnx'
+    config_file = voices_dir / f'{{voice_name}}.onnx.json'
+    
+    if not voice_file.exists():
+        raise FileNotFoundError(f'Voice file not found: {{voice_file}}')
+    if not config_file.exists():
+        raise FileNotFoundError(f'Config file not found: {{config_file}}')
+    
+    text = sys.stdin.read()
+    
+    result = subprocess.run(
+        [sys.executable, '-m', 'piper', 
+         '--model', f'{{voices_dir / voice_name}}',
+         '--output-file', r'{Path.GetFullPath(outputPath)}'],
+        input=text,
+        capture_output=True,
+        text=True
+    )
+    
+    if result.returncode != 0:
+        raise RuntimeError(f'Piper failed: {{result.stderr}}')
+    
+    print('Success')
+except Exception as e:
+    import traceback
+    traceback.print_exc()
+    print(f'Error: {{e}}', file=sys.stderr)
+    sys.exit(1)
+";
+
+        await File.WriteAllTextAsync(pythonScriptPath, pythonCode);
+
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = "python.exe",
+            Arguments = $"\"{pythonScriptPath}\"",
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            StandardErrorEncoding = Encoding.UTF8,
+            StandardOutputEncoding = Encoding.UTF8
+        };
+
+        using (var process = Process.Start(startInfo))
+        {
+            if (process == null)
+                throw new Exception("Failed to start Python/Piper process.");
+
+            await process.StandardInput.WriteLineAsync(text);
+            await process.StandardInput.FlushAsync();
+            process.StandardInput.Dispose();
+
+            var output = await process.StandardOutput.ReadToEndAsync();
+            var error = await process.StandardError.ReadToEndAsync();
+
+            await process.WaitForExitAsync();
+
+            if (process.ExitCode != 0)
+                throw new Exception($"Piper error: {error}");
+
+            if (!File.Exists(outputPath))
+                throw new Exception($"Output file was not created at {outputPath}");
+
+            Console.WriteLine($"\nAudio generated successfully: {outputPath}");
+
+            // Cleanup
+            if (File.Exists(pythonScriptPath))
+                File.Delete(pythonScriptPath);
+
+            return true;
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"Error converting text to speech: {ex.Message}");
+        return false;
     }
 }
