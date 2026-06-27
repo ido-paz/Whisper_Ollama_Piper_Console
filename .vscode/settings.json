@@ -1,4 +1,11 @@
 {
+  "chat.agent.enabled": true,
+  "github.copilot.chat.cli.mcp.enabled": true,
+  "github.copilot.chat.cli.customAgents.enabled": true,
+  "github.copilot.chat.codesearch.agent.enabled": true,
+  "github.copilot.chat.debug.overrideChatEngine": "ollama:qwen3-coder:30b"
+}
+{
     "chat.tools.terminal.autoApprove": {
         "Copy-Item": true
     }

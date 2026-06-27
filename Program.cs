@@ -5,13 +5,19 @@ using Whisper.net;
 using Whisper.net.Ggml;
 
 // =====================================================
+// GLOBAL STATE
+// =====================================================
+WhisperFactory? cachedWhisperFactory = null;
+string? cachedModelPath = null;
+
+// =====================================================
 // CONFIGURATION
 // =====================================================
 string recordingAudioPath = Path.Combine("audio", "latest_recording_output.wav");
-int recordingDurationInSeconds = 3;
-string whisperLanguage = "en"; // "he" for Hebrew, "es" for Spanish, etc.
-string whisperModelPath = Path.Combine("whisper", "ggml-base.bin"); // "ggml-medium.bin" for better accuracy
-string ollamaModel = "llama3.1"; // "llama2", "neural-chat", etc.
+int recordingDurationInSeconds = 5;
+string whisperLanguage = "en"; // English
+string whisperModelPath = Path.Combine("whisper", "ggml-base.bin"); // tiny for speed (<100ms), base for balance, medium for quality
+string ollamaModel = "qwen2.5:3b-instruct"; // 3b for speed, 7b for quality
 string ollamaUrl = "http://localhost:11434";
 string piperAudioOutput = Path.Combine("audio", "ollama_response_output.wav");
 string piperLanguage = "en_US-lessac-medium"; // "he_IL-kalpak-medium" for Hebrew
@@ -24,26 +30,39 @@ Directory.CreateDirectory("audio");
 
 Console.WriteLine("You can speak, I am recording ...");
 
+var stopwatch = Stopwatch.StartNew();
+
+string? transcription = null;
+string? ollamaResponse = null;
+
+var recordingStopwatch = Stopwatch.StartNew();
 if (await RecordAudioAsync(recordingAudioPath, recordingDurationInSeconds))
 {
-    Console.WriteLine("Recording completed.");
+    recordingStopwatch.Stop();
+    Console.WriteLine($"Recording completed in {recordingStopwatch.Elapsed.TotalSeconds:F2} seconds.");
 
     // Step 1: Transcribe audio to text using Whisper
-    string transcription = await TranscribeAudioAsync(recordingAudioPath, whisperLanguage, whisperModelPath);
+    transcription = await TranscribeAudioAsync(recordingAudioPath, whisperLanguage, whisperModelPath);
     if (transcription != null)
     {
         Console.WriteLine("\n=== Transcription Result ===");
         Console.WriteLine(transcription);
 
         // Step 2: Send transcription to Ollama for processing
-        string ollamaResponse = await SendToOllamaAsync(transcription, ollamaModel, ollamaUrl);
+        var ollamaStopwatch = Stopwatch.StartNew();
+        ollamaResponse = await SendToOllamaAsync(transcription, ollamaModel, ollamaUrl);
+        ollamaStopwatch.Stop();
+        Console.WriteLine($"Getting Ollama response completed in {ollamaStopwatch.Elapsed.TotalSeconds:F2} seconds.");
         if (ollamaResponse != null)
         {
             Console.WriteLine("\n=== Ollama Response ===");
             Console.WriteLine(ollamaResponse);
 
             // Step 3: Convert Ollama response to speech using Piper
+            var ttsStopwatch = Stopwatch.StartNew();
             await ConvertTextToSpeechAsync(ollamaResponse, piperAudioOutput, piperLanguage);
+            ttsStopwatch.Stop();
+            Console.WriteLine($"TTS completed in {ttsStopwatch.Elapsed.TotalSeconds:F2} seconds.");
         }
         else
         {
@@ -56,13 +75,16 @@ else
     Console.WriteLine("Recording failed.");
 }
 
+stopwatch.Stop();
+Console.WriteLine($"Total pipeline time: {stopwatch.Elapsed.TotalSeconds:F2} seconds.");
+
 // =====================================================
 // AUDIO RECORDING (FFmpeg)
 // =====================================================
 /// <summary>
 /// Records audio from the microphone using FFmpeg.
 /// </summary>
-static async Task<bool> RecordAudioAsync(string outputPath, int durationInSeconds = 3)
+async Task<bool> RecordAudioAsync(string outputPath, int durationInSeconds = 3)
 {
     try
     {
@@ -112,7 +134,7 @@ static async Task<bool> RecordAudioAsync(string outputPath, int durationInSecond
 /// Transcribes audio file to text using Whisper.net.
 /// Available models: tiny, base, small, medium, large
 /// </summary>
-static async Task<string?> TranscribeAudioAsync(string audioPath, string language = "en", string modelPath = "ggml-base.bin")
+async Task<string?> TranscribeAudioAsync(string audioPath, string language = "en", string modelPath = "ggml-base.bin")
 {
     try
     {
@@ -122,26 +144,50 @@ static async Task<string?> TranscribeAudioAsync(string audioPath, string languag
             return null;
         }
 
-        Console.WriteLine("Loading Whisper model...");
+        string resolvedModelPath = modelPath;
+        if (!File.Exists(resolvedModelPath))
+        {
+            string fallbackModelPath = Path.Combine("whisper", "ggml-base.bin");
+            if (File.Exists(fallbackModelPath))
+            {
+                resolvedModelPath = fallbackModelPath;
+                Console.WriteLine($"Whisper model not found at {modelPath}; using {resolvedModelPath}");
+            }
+        }
+
+        var modelLoadStopwatch = Stopwatch.StartNew();
+        Console.WriteLine($"Preparing Whisper model from {resolvedModelPath}...");
 
         var stringBuilder = new StringBuilder();
-        using (var whisperFactory = WhisperFactory.FromPath(modelPath))
+        
+        // Cache the factory to avoid reloading
+        if (cachedWhisperFactory == null || cachedModelPath != resolvedModelPath)
         {
-            using (var processor = whisperFactory.CreateBuilder()
-                .WithLanguage(language)
-                .Build())
-            {
-                Console.WriteLine($"Transcribing {audioPath}...");
+            cachedWhisperFactory = WhisperFactory.FromPath(resolvedModelPath);
+            cachedModelPath = resolvedModelPath;
+        }
+        
+        modelLoadStopwatch.Stop();
+        Console.WriteLine($"Whisper model ready in {modelLoadStopwatch.Elapsed.TotalSeconds:F2} seconds.");
 
-                using (var fileStream = File.OpenRead(audioPath))
+        var transcriptionStopwatch = Stopwatch.StartNew();
+        using (var processor = cachedWhisperFactory.CreateBuilder()
+            .WithLanguage(language)
+            .Build())
+        {
+            Console.WriteLine($"Transcribing {audioPath}...");
+
+            using (var fileStream = File.OpenRead(audioPath))
+            {
+                await foreach (var segment in processor.ProcessAsync(fileStream))
                 {
-                    await foreach (var segment in processor.ProcessAsync(fileStream))
-                    {
-                        stringBuilder.AppendLine($"[{segment.Start:hh\\:mm\\:ss} --> {segment.End:hh\\:mm\\:ss}] {segment.Text}");
-                    }
+                    stringBuilder.AppendLine($"[{segment.Start:hh\\:mm\\:ss} --> {segment.End:hh\\:mm\\:ss}] {segment.Text}");
                 }
             }
         }
+        transcriptionStopwatch.Stop();
+        Console.WriteLine($"Transcribing audio completed in {transcriptionStopwatch.Elapsed.TotalSeconds:F2} seconds.");
+
 
         return stringBuilder.ToString();
     }
@@ -158,46 +204,60 @@ static async Task<string?> TranscribeAudioAsync(string audioPath, string languag
 /// <summary>
 /// Sends text to Ollama LLM via HTTP API and retrieves the response.
 /// </summary>
-static async Task<string?> SendToOllamaAsync(string text, string model = "llama2", string ollamaUrl = "http://localhost:11434")
+async Task<string?> SendToOllamaAsync(string text, string model = "llama2", string ollamaUrl = "http://localhost:11434")
 {
     try
     {
-        using (var httpClient = new HttpClient())
+        string userPrompt = string.IsNullOrWhiteSpace(text) ? "Hello" : text.Trim();
+        if (userPrompt.Length > 220)
+            userPrompt = userPrompt[..220];
+
+        using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+
+        var requestBody = new
         {
-            var requestBody = new
+            model = model,
+            messages = new[]
             {
-                model = model,
-                prompt = text,
-                stream = false
-            };
-
-            var jsonContent = new StringContent(
-                JsonSerializer.Serialize(requestBody),
-                Encoding.UTF8,
-                "application/json"
-            );
-
-            Console.WriteLine($"Sending to Ollama ({model})...");
-            var response = await httpClient.PostAsync($"{ollamaUrl}/api/generate", jsonContent);
-
-            if (!response.IsSuccessStatusCode)
+                new { role = "system", content = "You are a concise assistant. Reply briefly in one short sentence." },
+                new { role = "user", content = userPrompt }
+            },
+            stream = false,
+            options = new
             {
-                Console.WriteLine($"Error: HTTP {response.StatusCode}");
-                return null;
+                num_predict = 40,
+                temperature = 0.2,
+                top_p = 0.9,
+                repeat_penalty = 1.1
             }
+        };
 
-            var responseContent = await response.Content.ReadAsStringAsync();
-            using (JsonDocument doc = JsonDocument.Parse(responseContent))
-            {
-                var root = doc.RootElement;
-                if (root.TryGetProperty("response", out var responseProperty))
-                {
-                    return responseProperty.GetString();
-                }
-            }
+        var jsonContent = new StringContent(
+            JsonSerializer.Serialize(requestBody),
+            Encoding.UTF8,
+            "application/json"
+        );
 
+        Console.WriteLine($"Sending to Ollama ({model})...");
+        var response = await httpClient.PostAsync($"{ollamaUrl}/api/chat", jsonContent);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            Console.WriteLine($"Error: HTTP {response.StatusCode}");
             return null;
         }
+
+        var responseContent = await response.Content.ReadAsStringAsync();
+        using JsonDocument doc = JsonDocument.Parse(responseContent);
+        var root = doc.RootElement;
+
+        if (root.TryGetProperty("message", out var messageElement) &&
+            messageElement.TryGetProperty("content", out var contentElement))
+        {
+            return contentElement.GetString()?.Trim();
+        }
+
+        return null;
     }
     catch (Exception ex)
     {
@@ -214,7 +274,7 @@ static async Task<string?> SendToOllamaAsync(string text, string model = "llama2
 /// Requires: pip install piper-tts
 /// Voice models: en_US-lessac-medium, he_IL-kalpak-medium, etc.
 /// </summary>
-static async Task<bool> ConvertTextToSpeechAsync(string text, string outputPath = "output.wav", string language = "en_US-lessac-medium")
+async Task<bool> ConvertTextToSpeechAsync(string text, string outputPath = "output.wav", string language = "en_US-lessac-medium")
 {
     try
     {
