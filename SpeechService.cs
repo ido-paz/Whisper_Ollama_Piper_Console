@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Media;
 using System.Text;
 using System.Threading.Tasks;
 using NAudio.Wave;
@@ -54,7 +55,7 @@ public class SpeechService
 
             using var waveIn = new WaveInEvent
             {
-                WaveFormat = new WaveFormat(16000, 16, 1),
+                WaveFormat = new WaveFormat(8000, 16, 1),
                 DeviceNumber = 0
             };
 
@@ -204,14 +205,31 @@ public class SpeechService
 
             var stringBuilder = new StringBuilder();
             var transcriptionStopwatch = Stopwatch.StartNew();
+            string? tempResampledFilePath = null;
+            string audioPathToUse = audioPath;
+
+            try
+            {
+                using var reader = new WaveFileReader(audioPath);
+                if (reader.WaveFormat.SampleRate != 16000 || reader.WaveFormat.Channels != 1 || reader.WaveFormat.BitsPerSample != 16)
+                {
+                    tempResampledFilePath = Path.Combine(Path.GetTempPath(), $"whisper_resampled_{Guid.NewGuid()}.wav");
+                    var targetFormat = new WaveFormat(16000, 16, 1);
+                    using var resampler = new MediaFoundationResampler(reader, targetFormat)
+                    {
+                        ResamplerQuality = 60
+                    };
+                    WaveFileWriter.CreateWaveFile(tempResampledFilePath, resampler);
+                    audioPathToUse = tempResampledFilePath;
+                }
 
             using (var processor = _cachedWhisperFactory.CreateBuilder()
                 .WithLanguage(language)
                 .Build())
             {
-                Console.WriteLine($"Transcribing {audioPath}...");
+                Console.WriteLine($"Transcribing {audioPathToUse}...");
 
-                using var fileStream = File.OpenRead(audioPath);
+                using var fileStream = File.OpenRead(audioPathToUse);
                 await foreach (var segment in processor.ProcessAsync(fileStream))
                 {
                     stringBuilder.AppendLine($"[{segment.Start:hh\\:mm\\:ss} --> {segment.End:hh\\:mm\\:ss}] {segment.Text}");
@@ -222,6 +240,18 @@ public class SpeechService
             Console.WriteLine($"Transcribing audio completed in {transcriptionStopwatch.Elapsed.TotalSeconds:F2} seconds.");
 
             return stringBuilder.ToString();
+        }
+        finally
+        {
+            if (tempResampledFilePath != null && File.Exists(tempResampledFilePath))
+            {
+                try
+                {
+                    File.Delete(tempResampledFilePath);
+                }
+                catch { }
+            }
+        }
         }
         catch (Exception ex)
         {
@@ -333,5 +363,33 @@ except Exception as e:
             Console.WriteLine($"Error converting text to speech: {ex.Message}");
             return false;
         }
+    }
+    public Task<bool> PlayAudioAsync(string audioPath)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Console.WriteLine("Audio playback is only supported on Windows.");
+            return Task.FromResult(false);
+        }
+
+#pragma warning disable CA1416
+        try
+        {
+            if (!File.Exists(audioPath))
+            {
+                Console.WriteLine($"Audio file not found for playback: {audioPath}");
+                return Task.FromResult(false);
+            }
+
+            using var player = new SoundPlayer(audioPath);
+            player.PlaySync();
+            return Task.FromResult(true);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error playing audio: {ex.Message}");
+            return Task.FromResult(false);
+        }
+#pragma warning restore CA1416
     }
 }

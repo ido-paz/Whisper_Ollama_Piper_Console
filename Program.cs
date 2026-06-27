@@ -47,9 +47,19 @@ if (!string.IsNullOrWhiteSpace(recordedPath))
             Console.WriteLine(modelService.Response);
 
             var ttsStopwatch = Stopwatch.StartNew();
-            await speechService.ConvertTextToSpeechAsync(ollamaResponse, config.PiperAudioOutput, config.PiperLanguage);
+            var ttsSuccess = await speechService.ConvertTextToSpeechAsync(ollamaResponse, config.PiperAudioOutput, config.PiperLanguage);
             ttsStopwatch.Stop();
             Console.WriteLine($"TTS completed in {ttsStopwatch.Elapsed.TotalSeconds:F2} seconds.");
+
+            if (ttsSuccess)
+            {
+                Console.WriteLine("Playing Ollama response...");
+                await speechService.PlayAudioAsync(config.PiperAudioOutput);
+            }
+            else
+            {
+                Console.WriteLine("TTS generation failed, skipping audio playback.");
+            }
         }
         else
         {
