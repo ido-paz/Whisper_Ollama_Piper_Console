@@ -1,10 +1,11 @@
 using System;
 using System.IO;
+using Microsoft.Extensions.Configuration;
 
 public class Configuration
 {
     public string RecordingAudioPath { get; set; }
-    public int RecordingDurationInSeconds { get; set; }
+    public string MaxRecordingDurationInSeconds { get; set; }
     public string WhisperLanguage { get; set; }
     public string WhisperModelPath { get; set; }
     public string OllamaModel { get; set; }
@@ -17,8 +18,9 @@ public class Configuration
 
     public Configuration()
     {
+        // Defaults
         RecordingAudioPath = Path.Combine("audio", "latest_recording_output.wav");
-        RecordingDurationInSeconds = 5;
+        MaxRecordingDurationInSeconds = "5";
         WhisperLanguage = "en";
         WhisperModelPath = Path.Combine("whisper", "ggml-base.bin");
         OllamaModel = "qwen2.5:3b-instruct";
@@ -28,6 +30,53 @@ public class Configuration
         SilenceDetectionDurationSeconds = 1;
         SilenceDetectionThresholdDb = "-35dB";
         FFmpegPath = Path.Combine("C:", "ffmpeg", "ffmpeg-master-latest-win64-gpl", "bin", "ffmpeg.exe");
+
+        // Attempt to override from appsettings.json in the current working directory using IConfiguration
+        try
+        {
+            var builder = new ConfigurationBuilder()
+                .SetBasePath(Directory.GetCurrentDirectory())
+                .AddJsonFile("appsettings.json", optional: true, reloadOnChange: false);
+
+            var cfg = builder.Build();
+
+            var sRecordingAudioPath = cfg.GetValue<string>("RecordingAudioPath");
+            if (!string.IsNullOrWhiteSpace(sRecordingAudioPath)) RecordingAudioPath = sRecordingAudioPath;
+
+            var sRecordingDuration = cfg.GetValue<string>("MaxRecordingDurationInSeconds");
+            if (sRecordingDuration != null) MaxRecordingDurationInSeconds = sRecordingDuration;
+
+            var sWhisperLanguage = cfg.GetValue<string>("WhisperLanguage");
+            if (!string.IsNullOrWhiteSpace(sWhisperLanguage)) WhisperLanguage = sWhisperLanguage;
+
+            var sWhisperModelPath = cfg.GetValue<string>("WhisperModelPath");
+            if (!string.IsNullOrWhiteSpace(sWhisperModelPath)) WhisperModelPath = sWhisperModelPath;
+
+            var sOllamaModel = cfg.GetValue<string>("OllamaModel");
+            if (!string.IsNullOrWhiteSpace(sOllamaModel)) OllamaModel = sOllamaModel;
+
+            var sOllamaUrl = cfg.GetValue<string>("OllamaUrl");
+            if (!string.IsNullOrWhiteSpace(sOllamaUrl)) OllamaUrl = sOllamaUrl;
+
+            var sPiperAudioOutput = cfg.GetValue<string>("PiperAudioOutput");
+            if (!string.IsNullOrWhiteSpace(sPiperAudioOutput)) PiperAudioOutput = sPiperAudioOutput;
+
+            var sPiperLanguage = cfg.GetValue<string>("PiperLanguage");
+            if (!string.IsNullOrWhiteSpace(sPiperLanguage)) PiperLanguage = sPiperLanguage;
+
+            var silenceDuration = cfg.GetValue<int?>("SilenceDetectionDurationSeconds");
+            if (silenceDuration.HasValue) SilenceDetectionDurationSeconds = silenceDuration.Value;
+
+            var sSilenceThreshold = cfg.GetValue<string>("SilenceDetectionThresholdDb");
+            if (!string.IsNullOrWhiteSpace(sSilenceThreshold)) SilenceDetectionThresholdDb = sSilenceThreshold;
+
+            var sFFmpegPath = cfg.GetValue<string>("FFmpegPath");
+            if (!string.IsNullOrWhiteSpace(sFFmpegPath)) FFmpegPath = sFFmpegPath;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Warning: failed to read appsettings.json: {ex.Message}");
+        }
     }
 
     public T Get<T>(Func<Configuration, T> selector) => selector(this);

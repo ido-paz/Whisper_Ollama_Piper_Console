@@ -1,8 +1,10 @@
+using System;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
+using System.Threading.Tasks;
+using NAudio.Wave;
 using Whisper.net;
-using Whisper.net.Ggml;
 
 public class SpeechService
 {
@@ -15,110 +17,155 @@ public class SpeechService
         _config = config;
     }
 
-    public async Task<bool> RecordAudioAsync(string outputPath, int durationInSeconds = 3)
+    public async Task<string?> RecordAudioAsync(string outputPath, string? maxRecordingDurationInSeconds = null)
     {
+        string tempOutputPath = Path.Combine(
+            Path.GetDirectoryName(outputPath) ?? Directory.GetCurrentDirectory(),
+            $"{Path.GetFileNameWithoutExtension(outputPath)}-{Guid.NewGuid()}{Path.GetExtension(outputPath)}"
+        );
+
         try
         {
-            if (File.Exists(outputPath))
-                File.Delete(outputPath);
+            if (File.Exists(tempOutputPath))
+                File.Delete(tempOutputPath);
 
-            var startInfo = new ProcessStartInfo
+            var durationSource = maxRecordingDurationInSeconds ?? _config.MaxRecordingDurationInSeconds;
+            int? maxDurationSeconds = null;
+            if (!string.IsNullOrWhiteSpace(durationSource))
             {
-                FileName = _config.FFmpegPath,
-                Arguments = $"-f dshow -i audio=\"Microphone Array (Intel® Smart Sound Technology for Digital Microphones)\" -t {durationInSeconds} -af silencedetect=noise={_config.SilenceDetectionThresholdDb}:d={_config.SilenceDetectionDurationSeconds} -acodec pcm_s16le -ar 16000 \"{outputPath}\"",
-                UseShellExecute = false,
-                RedirectStandardInput = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true
-            };
-
-            using var process = Process.Start(startInfo);
-            if (process == null)
-                throw new Exception("Failed to start ffmpeg process.");
-
-            var outputTask = process.StandardOutput.ReadToEndAsync();
-            var errorBuilder = new StringBuilder();
-            var expectedSilenceDuration = TimeSpan.FromSeconds(_config.SilenceDetectionDurationSeconds);
-            DateTime? silenceStartTime = null;
-            bool isInSilence = false;
-            object silenceLock = new object();
-
-            // Setup async stderr reader via event to avoid concurrent stream reads
-            process.EnableRaisingEvents = true;
-            process.ErrorDataReceived += (s, e) =>
-            {
-                if (e.Data == null) return;
-                lock (errorBuilder)
+                if (int.TryParse(durationSource, out var durationValue) && durationValue > 0)
                 {
-                    errorBuilder.AppendLine(e.Data);
+                    maxDurationSeconds = durationValue;
                 }
-
-                if (e.Data.Contains("silence_start:"))
+                else
                 {
-                    lock (silenceLock)
-                    {
-                        if (!isInSilence)
-                        {
-                            isInSilence = true;
-                            silenceStartTime = DateTime.UtcNow;
-                        }
-                    }
-                }
-                else if (e.Data.Contains("silence_end:"))
-                {
-                    lock (silenceLock)
-                    {
-                        isInSilence = false;
-                        silenceStartTime = null;
-                    }
-                }
-            };
-            process.BeginErrorReadLine();
-
-            // Poll for silence or process exit
-            while (!process.HasExited)
-            {
-                await Task.Delay(100);
-                bool stop = false;
-                lock (silenceLock)
-                {
-                    if (isInSilence && silenceStartTime.HasValue && DateTime.UtcNow - silenceStartTime.Value >= expectedSilenceDuration)
-                    {
-                        stop = true;
-                    }
-                }
-
-                if (stop)
-                {
-                    try
-                    {
-                        if (!process.HasExited)
-                            await process.StandardInput.WriteLineAsync("q");
-                    }
-                    catch { }
-                    break;
+                    Console.WriteLine($"Warning: invalid MaxRecordingDurationInSeconds '{durationSource}'. Recording will stop only on silence.");
                 }
             }
 
-            await process.WaitForExitAsync();
-            var output = await outputTask;
-            string error = null;
-            lock (errorBuilder)
+            var silenceDuration = TimeSpan.FromSeconds(_config.SilenceDetectionDurationSeconds);
+            var silenceThresholdDb = _config.SilenceDetectionThresholdDb?.Trim().TrimEnd('d', 'B', 'b') ?? "-35";
+            if (!double.TryParse(silenceThresholdDb, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var silenceDb))
             {
-                error = errorBuilder.ToString();
+                silenceDb = -35.0;
             }
 
-            if (process.ExitCode != 0)
-                throw new Exception($"Error recording audio: {error}");
+            var silenceThreshold = Math.Pow(10.0, silenceDb / 20.0);
+
+            using var waveIn = new WaveInEvent
+            {
+                WaveFormat = new WaveFormat(16000, 16, 1),
+                DeviceNumber = 0
+            };
+
+            using var writer = new WaveFileWriter(tempOutputPath, waveIn.WaveFormat);
+            var recordingStartTime = DateTime.UtcNow;
+            var silenceTime = TimeSpan.Zero;
+            bool hasHeardAudio = false;
+            var stopRecording = false;
+            var recordingStopped = new TaskCompletionSource<bool>();
+
+            waveIn.DataAvailable += (sender, e) =>
+            {
+                if (stopRecording)
+                    return;
+
+                writer.Write(e.Buffer, 0, e.BytesRecorded);
+                writer.Flush();
+
+                int bytesPerSample = 2;
+                double maxLevel = 0;
+                for (int i = 0; i < e.BytesRecorded; i += bytesPerSample)
+                {
+                    short sample = (short)(e.Buffer[i] | (e.Buffer[i + 1] << 8));
+                    double level = Math.Abs(sample / 32768.0);
+                    if (level > maxLevel)
+                        maxLevel = level;
+                }
+
+                bool isSilent = maxLevel <= silenceThreshold;
+                if (!hasHeardAudio)
+                {
+                    if (!isSilent)
+                    {
+                        hasHeardAudio = true;
+                    }
+                }
+                else
+                {
+                    if (isSilent)
+                    {
+                        silenceTime += TimeSpan.FromSeconds((double)e.BytesRecorded / waveIn.WaveFormat.AverageBytesPerSecond);
+                    }
+                    else
+                    {
+                        silenceTime = TimeSpan.Zero;
+                    }
+                }
+
+                if (hasHeardAudio && silenceTime >= silenceDuration)
+                {
+                    stopRecording = true;
+                    waveIn.StopRecording();
+                }
+
+                if (maxDurationSeconds.HasValue && DateTime.UtcNow - recordingStartTime >= TimeSpan.FromSeconds(maxDurationSeconds.Value))
+                {
+                    stopRecording = true;
+                    waveIn.StopRecording();
+                }
+            };
+
+            waveIn.RecordingStopped += (sender, e) =>
+            {
+                writer.Dispose();
+
+                if (e.Exception != null)
+                {
+                    recordingStopped.TrySetException(e.Exception);
+                }
+                else
+                {
+                    recordingStopped.TrySetResult(true);
+                }
+            };
+
+            Console.WriteLine("Recording audio from the default microphone...");
+            waveIn.StartRecording();
+            await recordingStopped.Task;
+
+            try
+            {
+                if (!string.Equals(tempOutputPath, outputPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (File.Exists(outputPath))
+                    {
+                        File.Delete(outputPath);
+                    }
+                    File.Move(tempOutputPath, outputPath, overwrite: true);
+                }
+            }
+            catch (IOException)
+            {
+                Console.WriteLine($"Warning: could not replace {outputPath}. Using temporary recorded file {tempOutputPath} instead.");
+                return tempOutputPath;
+            }
 
             Console.WriteLine($"Audio recorded successfully to {outputPath}");
-            return true;
+            return outputPath;
         }
         catch (Exception ex)
         {
             Console.WriteLine($"Exception occurred during recording: {ex.Message}");
-            return false;
+            if (File.Exists(tempOutputPath))
+            {
+                try
+                {
+                    File.Delete(tempOutputPath);
+                }
+                catch { }
+            }
+            return null;
         }
     }
 

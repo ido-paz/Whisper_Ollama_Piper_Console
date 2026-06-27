@@ -16,13 +16,14 @@ Console.WriteLine("You can speak, I am recording ...");
 var pipelineStopwatch = Stopwatch.StartNew();
 
 var recordingStopwatch = Stopwatch.StartNew();
-if (await speechService.RecordAudioAsync(config.RecordingAudioPath, config.RecordingDurationInSeconds))
+var recordedPath = await speechService.RecordAudioAsync(config.RecordingAudioPath, config.MaxRecordingDurationInSeconds);
+if (!string.IsNullOrWhiteSpace(recordedPath))
 {
     recordingStopwatch.Stop();
     Console.WriteLine($"Recording completed in {recordingStopwatch.Elapsed.TotalSeconds:F2} seconds.");
 
     var transcriptionStopwatch = Stopwatch.StartNew();
-    var transcription = await speechService.TranscribeAsync(config.RecordingAudioPath, config.WhisperLanguage, config.WhisperModelPath);
+    var transcription = await speechService.TranscribeAsync(recordedPath, config.WhisperLanguage, config.WhisperModelPath);
     transcriptionStopwatch.Stop();
     Console.WriteLine($"Transcribing audio completed in {transcriptionStopwatch.Elapsed.TotalSeconds:F2} seconds.");
 
