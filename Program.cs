@@ -7,6 +7,28 @@ using System.Text.Json;
 
 var config = new Configuration();
 Directory.CreateDirectory("audio");
+Directory.CreateDirectory("log");
+
+// Create log file with session timestamp
+var now = DateTime.Now;
+var logFileName = $"session-{now:yyyy-MM-dd-HH-mm}.log";
+var logFilePath = Path.Combine(Directory.GetCurrentDirectory(), "log", logFileName);
+
+// Function to log conversation
+void LogMessage(string role, string message)
+{
+    var timestamp = DateTime.Now.ToString("HH:mm:ss");
+    var logLine = $"[{timestamp}]:[{role}], {message}";
+    
+    try
+    {
+        File.AppendAllText(logFilePath, logLine + Environment.NewLine);
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"Failed to write to log file: {ex.Message}");
+    }
+}
 
 // Clean audio folder before starting session
 var audioDir = new DirectoryInfo("audio");
@@ -59,6 +81,8 @@ while (continueInteracting)
             modelService.SetUserPrompt(transcription);
             // Store user prompt in session memory
             modelService.AddSessionMemory("user", transcription);
+            // Log user message
+            LogMessage("User", transcription);
             
             var requestBody = modelService.BuildRequestBody();
 
@@ -72,6 +96,8 @@ while (continueInteracting)
                 modelService.SetResponse(ollamaResponse);
                 // Store Ollama response in session memory
                 modelService.AddSessionMemory("assistant", ollamaResponse);
+                // Log system response
+                LogMessage("System", ollamaResponse);
                 
                 Console.WriteLine("\n=== Ollama Response ===");
                 Console.WriteLine(modelService.Response);
