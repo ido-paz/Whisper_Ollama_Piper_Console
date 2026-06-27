@@ -15,6 +15,7 @@ public class Configuration
     public int SilenceDetectionDurationSeconds { get; set; }
     public string SilenceDetectionThresholdDb { get; set; }
     public string FFmpegPath { get; set; }
+    public int InteractionTimeoutSeconds { get; set; }
 
     public Configuration()
     {
@@ -30,6 +31,7 @@ public class Configuration
         SilenceDetectionDurationSeconds = 1;
         SilenceDetectionThresholdDb = "-35dB";
         FFmpegPath = Path.Combine("C:", "ffmpeg", "ffmpeg-master-latest-win64-gpl", "bin", "ffmpeg.exe");
+        InteractionTimeoutSeconds = 5;
 
         // Attempt to override from appsettings.json in the current working directory using IConfiguration
         try
@@ -72,6 +74,9 @@ public class Configuration
 
             var sFFmpegPath = cfg.GetValue<string>("FFmpegPath");
             if (!string.IsNullOrWhiteSpace(sFFmpegPath)) FFmpegPath = sFFmpegPath;
+
+            var sInteractionTimeout = cfg.GetValue<int?>("InteractionTimeoutSeconds");
+            if (sInteractionTimeout.HasValue) InteractionTimeoutSeconds = sInteractionTimeout.Value;
         }
         catch (Exception ex)
         {

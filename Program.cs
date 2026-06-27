@@ -8,6 +8,21 @@ using System.Text.Json;
 var config = new Configuration();
 Directory.CreateDirectory("audio");
 
+// Clean audio folder before starting session
+var audioDir = new DirectoryInfo("audio");
+foreach (var file in audioDir.GetFiles())
+{
+    try
+    {
+        file.Delete();
+        Console.WriteLine($"Deleted: {file.Name}");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"Failed to delete {file.Name}: {ex.Message}");
+    }
+}
+
 var speechService = new SpeechService(config);
 var modelService = new ModelService(config.OllamaModel, "Reply shortly and answer in one short sentence.");
 
@@ -15,7 +30,6 @@ Console.WriteLine("You can speak, I am recording ...");
 
 var pipelineStopwatch = Stopwatch.StartNew();
 
-var interactionTimeout = 5; // seconds of silence before exiting loop
 bool continueInteracting = true;
 bool isFirstIteration = true;
 
@@ -23,7 +37,7 @@ while (continueInteracting)
 {
     var recordingStopwatch = Stopwatch.StartNew();
     // Only apply timeout after the first interaction (after first TTS response)
-    int? silenceTimeout = isFirstIteration ? null : interactionTimeout;
+    int? silenceTimeout = isFirstIteration ? null : config.InteractionTimeoutSeconds;
     var recordedPath = await speechService.RecordAudioAsync(config.RecordingAudioPath, config.MaxRecordingDurationInSeconds, silenceTimeout);
     recordingStopwatch.Stop();
     isFirstIteration = false;
@@ -43,6 +57,9 @@ while (continueInteracting)
             Console.WriteLine(transcription);
 
             modelService.SetUserPrompt(transcription);
+            // Store user prompt in session memory
+            modelService.AddSessionMemory("user", transcription);
+            
             var requestBody = modelService.BuildRequestBody();
 
             var ollamaStopwatch = Stopwatch.StartNew();
@@ -53,6 +70,9 @@ while (continueInteracting)
             if (!string.IsNullOrWhiteSpace(ollamaResponse))
             {
                 modelService.SetResponse(ollamaResponse);
+                // Store Ollama response in session memory
+                modelService.AddSessionMemory("assistant", ollamaResponse);
+                
                 Console.WriteLine("\n=== Ollama Response ===");
                 Console.WriteLine(modelService.Response);
 
@@ -71,7 +91,7 @@ while (continueInteracting)
                     Console.WriteLine("TTS generation failed, skipping audio playback.");
                 }
 
-                Console.WriteLine($"\nListening for response (will timeout after {interactionTimeout} seconds of silence)...");
+                Console.WriteLine($"\nListening for response (will timeout after {config.InteractionTimeoutSeconds} seconds of silence)...");
             }
             else
             {

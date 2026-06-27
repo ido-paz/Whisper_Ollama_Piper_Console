@@ -35,10 +35,10 @@ public class ModelService
     {
         var messages = new List<object>
         {
-            new { role = "system", content = SystemPrompt },
-            new { role = "user", content = UserPrompt }
+            new { role = "system", content = SystemPrompt }
         };
 
+        // Add session memory (previous conversation history) first
         if (SessionMemory.Count > 0)
         {
             foreach (var memory in SessionMemory)
@@ -46,6 +46,9 @@ public class ModelService
                 messages.Add(new { role = memory.Role, content = memory.Content });
             }
         }
+
+        // Add current user prompt last
+        messages.Add(new { role = "user", content = UserPrompt });
 
         return new
         {
