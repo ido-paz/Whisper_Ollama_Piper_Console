@@ -18,7 +18,7 @@ public class SpeechService
         _config = config;
     }
 
-    public async Task<string?> RecordAudioAsync(string outputPath, string? maxRecordingDurationInSeconds = null)
+    public async Task<string?> RecordAudioAsync(string outputPath, string? maxRecordingDurationInSeconds = null, int? silenceTimeoutSeconds = null)
     {
         string tempOutputPath = Path.Combine(
             Path.GetDirectoryName(outputPath) ?? Directory.GetCurrentDirectory(),
@@ -52,6 +52,7 @@ public class SpeechService
             }
 
             var silenceThreshold = Math.Pow(10.0, silenceDb / 20.0);
+            var hardSilenceTimeout = silenceTimeoutSeconds.HasValue ? TimeSpan.FromSeconds(silenceTimeoutSeconds.Value) : TimeSpan.MaxValue;
 
             using var waveIn = new WaveInEvent
             {
@@ -115,6 +116,13 @@ public class SpeechService
                     stopRecording = true;
                     waveIn.StopRecording();
                 }
+
+                // Hard silence timeout: if no audio is heard within the timeout, stop
+                if (!hasHeardAudio && DateTime.UtcNow - recordingStartTime >= hardSilenceTimeout)
+                {
+                    stopRecording = true;
+                    waveIn.StopRecording();
+                }
             };
 
             waveIn.RecordingStopped += (sender, e) =>
@@ -134,6 +142,21 @@ public class SpeechService
             Console.WriteLine("Recording audio from the default microphone...");
             waveIn.StartRecording();
             await recordingStopped.Task;
+
+            // If no audio was heard and timeout occurred, return null to signal silence
+            if (!hasHeardAudio && DateTime.UtcNow - recordingStartTime >= hardSilenceTimeout)
+            {
+                if (File.Exists(tempOutputPath))
+                {
+                    try
+                    {
+                        File.Delete(tempOutputPath);
+                    }
+                    catch { }
+                }
+                Console.WriteLine("Silence detected (no speech within timeout).");
+                return null;
+            }
 
             try
             {

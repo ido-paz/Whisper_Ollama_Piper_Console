@@ -15,61 +15,76 @@ Console.WriteLine("You can speak, I am recording ...");
 
 var pipelineStopwatch = Stopwatch.StartNew();
 
-var recordingStopwatch = Stopwatch.StartNew();
-var recordedPath = await speechService.RecordAudioAsync(config.RecordingAudioPath, config.MaxRecordingDurationInSeconds);
-if (!string.IsNullOrWhiteSpace(recordedPath))
+var interactionTimeout = 5; // seconds of silence before exiting loop
+bool continueInteracting = true;
+bool isFirstIteration = true;
+
+while (continueInteracting)
 {
+    var recordingStopwatch = Stopwatch.StartNew();
+    // Only apply timeout after the first interaction (after first TTS response)
+    int? silenceTimeout = isFirstIteration ? null : interactionTimeout;
+    var recordedPath = await speechService.RecordAudioAsync(config.RecordingAudioPath, config.MaxRecordingDurationInSeconds, silenceTimeout);
     recordingStopwatch.Stop();
-    Console.WriteLine($"Recording completed in {recordingStopwatch.Elapsed.TotalSeconds:F2} seconds.");
+    isFirstIteration = false;
 
-    var transcriptionStopwatch = Stopwatch.StartNew();
-    var transcription = await speechService.TranscribeAsync(recordedPath, config.WhisperLanguage, config.WhisperModelPath);
-    transcriptionStopwatch.Stop();
-    Console.WriteLine($"Transcribing audio completed in {transcriptionStopwatch.Elapsed.TotalSeconds:F2} seconds.");
-
-    if (!string.IsNullOrWhiteSpace(transcription))
+    if (!string.IsNullOrWhiteSpace(recordedPath))
     {
-        Console.WriteLine("\n=== Transcription Result ===");
-        Console.WriteLine(transcription);
+        Console.WriteLine($"Recording completed in {recordingStopwatch.Elapsed.TotalSeconds:F2} seconds.");
 
-        modelService.SetUserPrompt(transcription);
-        var requestBody = modelService.BuildRequestBody();
+        var transcriptionStopwatch = Stopwatch.StartNew();
+        var transcription = await speechService.TranscribeAsync(recordedPath, config.WhisperLanguage, config.WhisperModelPath);
+        transcriptionStopwatch.Stop();
+        Console.WriteLine($"Transcribing audio completed in {transcriptionStopwatch.Elapsed.TotalSeconds:F2} seconds.");
 
-        var ollamaStopwatch = Stopwatch.StartNew();
-        var ollamaResponse = await SendToOllamaAsync(requestBody, config.OllamaUrl);
-        ollamaStopwatch.Stop();
-        Console.WriteLine($"Getting Ollama response completed in {ollamaStopwatch.Elapsed.TotalSeconds:F2} seconds.");
-
-        if (!string.IsNullOrWhiteSpace(ollamaResponse))
+        if (!string.IsNullOrWhiteSpace(transcription))
         {
-            modelService.SetResponse(ollamaResponse);
-            Console.WriteLine("\n=== Ollama Response ===");
-            Console.WriteLine(modelService.Response);
+            Console.WriteLine("\n=== Transcription Result ===");
+            Console.WriteLine(transcription);
 
-            var ttsStopwatch = Stopwatch.StartNew();
-            var ttsSuccess = await speechService.ConvertTextToSpeechAsync(ollamaResponse, config.PiperAudioOutput, config.PiperLanguage);
-            ttsStopwatch.Stop();
-            Console.WriteLine($"TTS completed in {ttsStopwatch.Elapsed.TotalSeconds:F2} seconds.");
+            modelService.SetUserPrompt(transcription);
+            var requestBody = modelService.BuildRequestBody();
 
-            if (ttsSuccess)
+            var ollamaStopwatch = Stopwatch.StartNew();
+            var ollamaResponse = await SendToOllamaAsync(requestBody, config.OllamaUrl);
+            ollamaStopwatch.Stop();
+            Console.WriteLine($"Getting Ollama response completed in {ollamaStopwatch.Elapsed.TotalSeconds:F2} seconds.");
+
+            if (!string.IsNullOrWhiteSpace(ollamaResponse))
             {
-                Console.WriteLine("Playing Ollama response...");
-                await speechService.PlayAudioAsync(config.PiperAudioOutput);
+                modelService.SetResponse(ollamaResponse);
+                Console.WriteLine("\n=== Ollama Response ===");
+                Console.WriteLine(modelService.Response);
+
+                var ttsStopwatch = Stopwatch.StartNew();
+                var ttsSuccess = await speechService.ConvertTextToSpeechAsync(ollamaResponse, config.PiperAudioOutput, config.PiperLanguage);
+                ttsStopwatch.Stop();
+                Console.WriteLine($"TTS completed in {ttsStopwatch.Elapsed.TotalSeconds:F2} seconds.");
+
+                if (ttsSuccess)
+                {
+                    Console.WriteLine("Playing Ollama response...");
+                    await speechService.PlayAudioAsync(config.PiperAudioOutput);
+                }
+                else
+                {
+                    Console.WriteLine("TTS generation failed, skipping audio playback.");
+                }
+
+                Console.WriteLine($"\nListening for response (will timeout after {interactionTimeout} seconds of silence)...");
             }
             else
             {
-                Console.WriteLine("TTS generation failed, skipping audio playback.");
+                Console.WriteLine("Failed to get response from Ollama.");
             }
         }
-        else
-        {
-            Console.WriteLine("Failed to get response from Ollama.");
-        }
     }
-}
-else
-{
-    Console.WriteLine("Recording failed.");
+    else
+    {
+        // Null returned means silence detected (no speech after timeout)
+        Console.WriteLine("Silence detected. Exiting interaction loop.");
+        continueInteracting = false;
+    }
 }
 
 pipelineStopwatch.Stop();
