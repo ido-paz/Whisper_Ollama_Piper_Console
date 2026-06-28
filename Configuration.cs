@@ -16,6 +16,7 @@ public class Configuration
     public string SilenceDetectionThresholdDb { get; set; }
     public string FFmpegPath { get; set; }
     public int InteractionTimeoutSeconds { get; set; }
+    public string SystemPrompt { get; internal set; }
 
     public Configuration()
     {
@@ -31,6 +32,7 @@ public class Configuration
         SilenceDetectionDurationSeconds = 1;
         SilenceDetectionThresholdDb = "-35dB";
         FFmpegPath = Path.Combine("C:", "ffmpeg", "ffmpeg-master-latest-win64-gpl", "bin", "ffmpeg.exe");
+        SystemPrompt = "You are a helpful assistant that responds to user queries in a concise and informative manner. You will be provided with audio recordings of user queries, which you will transcribe and respond to. Your responses should be clear, accurate, and relevant to the user's query. If the query is unclear or ambiguous, ask for clarification. Avoid providing personal opinions or engaging in casual conversation. Focus on delivering factual information and actionable advice.";
         InteractionTimeoutSeconds = 5;
 
         // Attempt to override from appsettings.json in the current working directory using IConfiguration
@@ -77,6 +79,9 @@ public class Configuration
 
             var sInteractionTimeout = cfg.GetValue<int?>("InteractionTimeoutSeconds");
             if (sInteractionTimeout.HasValue) InteractionTimeoutSeconds = sInteractionTimeout.Value;
+
+            var sSystemPrompt = cfg.GetValue<string>("SystemPrompt");
+            if (!string.IsNullOrWhiteSpace(sSystemPrompt)) SystemPrompt = sSystemPrompt;
         }
         catch (Exception ex)
         {

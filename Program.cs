@@ -14,6 +14,13 @@ var now = DateTime.Now;
 var logFileName = $"session-{now:yyyy-MM-dd-HH-mm}.log";
 var logFilePath = Path.Combine(Directory.GetCurrentDirectory(), "log", logFileName);
 
+// Function to log console output with timestamp
+void Log(string message)
+{
+    var timestamp = DateTime.Now.ToString("HH:mm:ss");
+    Console.WriteLine($"[{timestamp}] : {message}");
+}
+
 // Function to log conversation
 void LogMessage(string role, string message)
 {
@@ -26,7 +33,7 @@ void LogMessage(string role, string message)
     }
     catch (Exception ex)
     {
-        Console.WriteLine($"Failed to write to log file: {ex.Message}");
+        Log($"Failed to write to log file: {ex.Message}");
     }
 }
 
@@ -37,18 +44,18 @@ foreach (var file in audioDir.GetFiles())
     try
     {
         file.Delete();
-        Console.WriteLine($"Deleted: {file.Name}");
+        Log($"Deleted: {file.Name}");
     }
     catch (Exception ex)
     {
-        Console.WriteLine($"Failed to delete {file.Name}: {ex.Message}");
+        Log($"Failed to delete {file.Name}: {ex.Message}");
     }
 }
 
 var speechService = new SpeechService(config);
-var modelService = new ModelService(config.OllamaModel, "Reply shortly and answer in one short sentence.");
+var modelService = new ModelService(config.OllamaModel, config.SystemPrompt);
 
-Console.WriteLine("You can speak, I am recording ...");
+Log("You can speak, I am recording ...");
 
 var pipelineStopwatch = Stopwatch.StartNew();
 
@@ -66,17 +73,17 @@ while (continueInteracting)
 
     if (!string.IsNullOrWhiteSpace(recordedPath))
     {
-        Console.WriteLine($"Recording completed in {recordingStopwatch.Elapsed.TotalSeconds:F2} seconds.");
+        Log($"Recording completed in {recordingStopwatch.Elapsed.TotalSeconds:F2} seconds.");
 
         var transcriptionStopwatch = Stopwatch.StartNew();
         var transcription = await speechService.TranscribeAsync(recordedPath, config.WhisperLanguage, config.WhisperModelPath);
         transcriptionStopwatch.Stop();
-        Console.WriteLine($"Transcribing audio completed in {transcriptionStopwatch.Elapsed.TotalSeconds:F2} seconds.");
+        Log($"Transcribing audio completed in {transcriptionStopwatch.Elapsed.TotalSeconds:F2} seconds.");
 
         if (!string.IsNullOrWhiteSpace(transcription))
         {
-            Console.WriteLine("\n=== Transcription Result ===");
-            Console.WriteLine(transcription);
+            Log("\n=== Transcription Result ===");
+            Log(transcription);
 
             modelService.SetUserPrompt(transcription);
             // Store user prompt in session memory
@@ -89,7 +96,7 @@ while (continueInteracting)
             var ollamaStopwatch = Stopwatch.StartNew();
             var ollamaResponse = await SendToOllamaAsync(requestBody, config.OllamaUrl);
             ollamaStopwatch.Stop();
-            Console.WriteLine($"Getting Ollama response completed in {ollamaStopwatch.Elapsed.TotalSeconds:F2} seconds.");
+            Log($"Getting Ollama response completed in {ollamaStopwatch.Elapsed.TotalSeconds:F2} seconds.");
 
             if (!string.IsNullOrWhiteSpace(ollamaResponse))
             {
@@ -99,42 +106,42 @@ while (continueInteracting)
                 // Log system response
                 LogMessage("System", ollamaResponse);
                 
-                Console.WriteLine("\n=== Ollama Response ===");
-                Console.WriteLine(modelService.Response);
+                Log("\n=== Ollama Response ===");
+                Log(modelService.Response);
 
                 var ttsStopwatch = Stopwatch.StartNew();
                 var ttsSuccess = await speechService.ConvertTextToSpeechAsync(ollamaResponse, config.PiperAudioOutput, config.PiperLanguage);
                 ttsStopwatch.Stop();
-                Console.WriteLine($"TTS completed in {ttsStopwatch.Elapsed.TotalSeconds:F2} seconds.");
+                Log($"TTS completed in {ttsStopwatch.Elapsed.TotalSeconds:F2} seconds.");
 
                 if (ttsSuccess)
                 {
-                    Console.WriteLine("Playing Ollama response...");
+                    Log("Playing Ollama response...");
                     await speechService.PlayAudioAsync(config.PiperAudioOutput);
                 }
                 else
                 {
-                    Console.WriteLine("TTS generation failed, skipping audio playback.");
+                    Log("TTS generation failed, skipping audio playback.");
                 }
 
-                Console.WriteLine($"\nListening for response (will timeout after {config.InteractionTimeoutSeconds} seconds of silence)...");
+                Log($"\nListening for response (will timeout after {config.InteractionTimeoutSeconds} seconds of silence)...");
             }
             else
             {
-                Console.WriteLine("Failed to get response from Ollama.");
+                Log("Failed to get response from Ollama.");
             }
         }
     }
     else
     {
         // Null returned means silence detected (no speech after timeout)
-        Console.WriteLine("Silence detected. Exiting interaction loop.");
+        Log("Silence detected. Exiting interaction loop.");
         continueInteracting = false;
     }
 }
 
 pipelineStopwatch.Stop();
-Console.WriteLine($"Total pipeline time: {pipelineStopwatch.Elapsed.TotalSeconds:F2} seconds.");
+Log($"Total pipeline time: {pipelineStopwatch.Elapsed.TotalSeconds:F2} seconds.");
 
 async Task<string?> SendToOllamaAsync(object requestBody, string ollamaUrl)
 {
@@ -147,12 +154,12 @@ async Task<string?> SendToOllamaAsync(object requestBody, string ollamaUrl)
             "application/json"
         );
 
-        Console.WriteLine("Sending to Ollama...");
+        Log("Sending to Ollama...");
         var response = await httpClient.PostAsync($"{ollamaUrl}/api/chat", jsonContent);
 
         if (!response.IsSuccessStatusCode)
         {
-            Console.WriteLine($"Error: HTTP {response.StatusCode}");
+            Log($"Error: HTTP {response.StatusCode}");
             return null;
         }
 
@@ -170,7 +177,7 @@ async Task<string?> SendToOllamaAsync(object requestBody, string ollamaUrl)
     }
     catch (Exception ex)
     {
-        Console.WriteLine($"Error sending to Ollama: {ex.Message}");
+        Log($"Error sending to Ollama: {ex.Message}");
         return null;
     }
 }
